@@ -1,10 +1,13 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -45,12 +48,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	contentType := header.Header.Get("Content-Type")
 
-	imageData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to read file", err)
-		return
-	}
-
 	userVideo, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not retrieve video", err)
@@ -61,18 +58,41 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	encodedImage := base64.StdEncoding.EncodeToString(imageData)
+	fileType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Could not parse media type", err)
+		return
+	}
+	if fileType != "image/jpeg" && fileType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Only JPEG or PNG images are allowed", nil)
+		return
+	}
 
-	dataURL := fmt.Sprintf("data:%v;base64,%v", contentType, encodedImage)
+	extension := strings.Split(fileType, "/")
 
-	userVideo.ThumbnailURL = &dataURL
+	newFilePath := filepath.Join(cfg.assetsRoot, videoID.String()+"."+extension[1])
+
+	newFile, err := os.Create(newFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not create thumbnail Path", err)
+		return
+	}
+	defer newFile.Close()
+
+	if _, err := io.Copy(newFile, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not copy file contents", err)
+		return
+	}
+
+	newURL := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, videoID, extension[1])
+
+	userVideo.ThumbnailURL = &newURL
 
 	err = cfg.db.UpdateVideo(userVideo)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not Update Video", err)
 		return
 	}
-
 
 	respondWithJSON(w, http.StatusOK, userVideo)
 }
